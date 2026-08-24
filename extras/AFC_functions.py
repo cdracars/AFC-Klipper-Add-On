@@ -87,7 +87,47 @@ class afcFunction:
         self.next_cmd_time = 0.
 
         self.show_macros = True
-        self.register_commands(self.show_macros, 'AFC_CALIBRATION', self.cmd_AFC_CALIBRATION,   self.cmd_AFC_CALIBRATION_help)
+        self.cutter_calibration_active: bool = False
+        self.cutter_calibration_distance: float = 0.0
+        self.cutter_calibration_margin: float = 10.0
+        self.cutter_calibration_extruder: Optional[str] = None
+        self.stn_unload_calibration_active: bool = False
+        self.stn_unload_calibration_distance: float = 0.0
+        self.stn_unload_calibration_extruder: Optional[str] = None
+        self.register_commands(
+            self.show_macros,
+            'AFC_CALIBRATION',
+            self.cmd_AFC_CALIBRATION,
+            self.cmd_AFC_CALIBRATION_help,
+        )
+        self.register_commands(
+            self.show_macros,
+            'AFC_TOOLHEAD_CALIBRATION',
+            self.cmd_AFC_TOOLHEAD_CALIBRATION,
+            self.cmd_AFC_TOOLHEAD_CALIBRATION_help,
+            self.cmd_AFC_TOOLHEAD_CALIBRATION_options,
+        )
+        self.register_commands(
+            self.show_macros,
+            'AFC_TOOL_STN_CALIBRATION',
+            self.cmd_AFC_TOOL_STN_CALIBRATION,
+            self.cmd_AFC_TOOL_STN_CALIBRATION_help,
+            self.cmd_AFC_TOOL_STN_CALIBRATION_options,
+        )
+        self.register_commands(
+            self.show_macros,
+            'AFC_TOOL_STN_UNLOAD_CALIBRATION',
+            self.cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION,
+            self.cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION_help,
+            self.cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION_options,
+        )
+        self.register_commands(
+            self.show_macros,
+            'AFC_CUTTER_CALIBRATION',
+            self.cmd_AFC_CUTTER_CALIBRATION,
+            self.cmd_AFC_CUTTER_CALIBRATION_help,
+            self.cmd_AFC_CUTTER_CALIBRATION_options,
+        )
         self.register_commands(self.show_macros, 'AFC_RESET',       self.cmd_AFC_RESET,         self.cmd_AFC_RESET_help,
                                self.cmd_AFC_RESET_options)
         self.register_commands(self.show_macros, 'AFC_TEST_LANES', self.cmd_AFC_TEST_LANES,
@@ -1276,8 +1316,12 @@ class afcFunction:
         buttons = []
         title = 'AFC Calibration'
         if self.afc.current is not None:
-            text = "Toolhead must be unloaded to calibrate system"
-            prompt.create_custom_p(title, text, None, True, buttons, None)
+            text = (
+                "Toolhead must be unloaded to calibrate AFC units. Toolhead calibration "
+                "includes tool_stn, tool_stn_unload, and cutter retract length."
+            )
+            buttons = [("Toolhead Calibration", "AFC_TOOLHEAD_CALIBRATION", "primary")]
+            prompt.create_custom_p(title, text, buttons, True, None, None)
             return
         text = ('The following prompts will lead you through the calibration of your AFC unit(s).'
                 ' First, select a unit to calibrate.'
@@ -1297,9 +1341,463 @@ class afcFunction:
             button_style = "primary" if index % 2 == 0 else "secondary"
             buttons.append((button_label, button_command, button_style))
 
-        bow_footer = [("All Lanes in all units", "ALL_CALIBRATION", "secondary")]
+        bow_footer = [("Toolhead", "AFC_TOOLHEAD_CALIBRATION", "info"),
+                      ("All Lanes in all units", "ALL_CALIBRATION", "secondary")]
         prompt.create_custom_p(title, text, buttons,
                                True, None, bow_footer)
+
+    cmd_AFC_TOOLHEAD_CALIBRATION_help = 'Open the toolhead variable calibration menu'
+    cmd_AFC_TOOLHEAD_CALIBRATION_options = {
+        "EXTRUDER": {"default": "", "type": "string"}
+    }
+    def cmd_AFC_TOOLHEAD_CALIBRATION(self, gcmd: GCodeCommand) -> None:
+        """
+        Open the guided toolhead calibration menu.
+
+        Usage
+        -------
+        `AFC_TOOLHEAD_CALIBRATION EXTRUDER=<extruder>`
+
+        Example
+        -------
+        ```
+        AFC_TOOLHEAD_CALIBRATION EXTRUDER=extruder
+        ```
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        extruder_name = gcmd.get("EXTRUDER", None)
+
+        if not extruder_name:
+            if len(self.afc.tools) == 1:
+                extruder_name = next(iter(self.afc.tools))
+            else:
+                buttons = []
+                for index, name in enumerate(self.afc.tools):
+                    style = "primary" if index % 2 == 0 else "secondary"
+                    command = f"AFC_TOOLHEAD_CALIBRATION EXTRUDER={name}"
+                    buttons.append((name, command, style))
+                text = "Select the toolhead extruder to calibrate."
+                if not buttons:
+                    text = "No AFC toolhead extruders are configured."
+                prompt.create_custom_p("Toolhead Calibration", text, buttons, True, None, None)
+                return
+
+        if extruder_name not in self.afc.tools:
+            prompt.p_end()
+            self.afc.error.AFC_error(f"'{extruder_name}' is not a valid extruder", pause=False)
+            return
+
+        buttons = [
+            ("tool_stn", f"AFC_TOOL_STN_CALIBRATION EXTRUDER={extruder_name}", "primary"),
+            ("tool_stn_unload",
+             f"AFC_TOOL_STN_UNLOAD_CALIBRATION EXTRUDER={extruder_name}", "secondary"),
+            ("Cutter Retract", f"AFC_CUTTER_CALIBRATION EXTRUDER={extruder_name}", "info")
+        ]
+        text = (
+            f"Calibrate {extruder_name}. tool_stn controls loading to the nozzle; "
+            "tool_stn_unload controls the movement after cutting that clears the toolhead "
+            "sensor or extruder gears."
+        )
+        prompt.create_custom_p("Toolhead Calibration", text, buttons, True, None, None)
+
+    cmd_AFC_TOOL_STN_CALIBRATION_help = 'Interactively tune and save tool_stn'
+    cmd_AFC_TOOL_STN_CALIBRATION_options = {
+        "EXTRUDER": {"default": "extruder", "type": "string"},
+        "ADJUST": {"default": 0, "type": "float"},
+        "SAVE": {"default": 0, "type": "int"}
+    }
+    def cmd_AFC_TOOL_STN_CALIBRATION(self, gcmd: GCodeCommand) -> None:
+        """
+        Tune tool_stn between normal tool load and unload tests.
+
+        Usage
+        -------
+        `AFC_TOOL_STN_CALIBRATION EXTRUDER=<extruder> ADJUST=<mm> SAVE=<0|1>`
+
+        Example
+        -------
+        ```
+        AFC_TOOL_STN_CALIBRATION EXTRUDER=extruder ADJUST=1
+        ```
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        extruder_name = gcmd.get("EXTRUDER", "extruder")
+        if extruder_name not in self.afc.tools:
+            prompt.p_end()
+            self.afc.error.AFC_error(f"'{extruder_name}' is not a valid extruder", pause=False)
+            return
+
+        extruder = self.afc.tools[extruder_name]
+        adjustment = gcmd.get_float("ADJUST", 0.0)
+        save = bool(gcmd.get_int("SAVE", 0, minval=0, maxval=1))
+        if adjustment:
+            new_value = round(extruder.tool_stn + adjustment, 3)
+            if new_value <= 0:
+                prompt.p_end()
+                self.afc.error.AFC_error("tool_stn must be greater than zero.", pause=False)
+                return
+            extruder._update_tool_stn(new_value)
+
+        if save:
+            self.ConfigRewrite(extruder.fullname, 'tool_stn', extruder.tool_stn, '')
+            prompt.create_custom_p(
+                "tool_stn Calibration Complete",
+                f"Saved tool_stn {extruder.tool_stn:.3f}mm for {extruder_name}.",
+                None, True, None, None)
+            return
+
+        command = f"AFC_TOOL_STN_CALIBRATION EXTRUDER={extruder_name}"
+        groups = [
+            [("-5mm", command + " ADJUST=-5", "secondary"),
+             ("-1mm", command + " ADJUST=-1", "secondary")],
+            [("+1mm", command + " ADJUST=1", "primary"),
+             ("+5mm", command + " ADJUST=5", "primary")]
+        ]
+        footer = [
+            ("Back", f"AFC_TOOLHEAD_CALIBRATION EXTRUDER={extruder_name}", "info"),
+            ("Save", command + " SAVE=1", "primary")
+        ]
+        text = (
+            f"Current tool_stn: {extruder.tool_stn:.3f}mm. Unload, then load a lane and "
+            "observe the nozzle. Decrease the value if too much filament extrudes; increase "
+            "it if filament does not reach the nozzle. Repeat until the hotend is full without "
+            "unwanted extrusion."
+        )
+        prompt.create_custom_p("tool_stn Calibration", text, None, False, groups, footer)
+
+    cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION_help = (
+        'Measure and save tool_stn_unload after a cutter operation')
+    cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION_options = {
+        "EXTRUDER": {"default": "extruder", "type": "string"},
+        "START": {"default": 0, "type": "int"},
+        "MOVE": {"default": 0, "type": "float"},
+        "COMPLETE": {"default": 0, "type": "int"},
+        "CANCEL": {"default": 0, "type": "int"}
+    }
+    def cmd_AFC_TOOL_STN_UNLOAD_CALIBRATION(self, gcmd: GCodeCommand) -> None:
+        """
+        Cut and measure the retraction needed to clear the toolhead.
+
+        Usage
+        -------
+        `AFC_TOOL_STN_UNLOAD_CALIBRATION EXTRUDER=<extruder>`
+
+        Example
+        -------
+        ```
+        AFC_TOOL_STN_UNLOAD_CALIBRATION EXTRUDER=extruder
+        ```
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        extruder_name = gcmd.get("EXTRUDER", "extruder")
+        if extruder_name not in self.afc.tools:
+            prompt.p_end()
+            self.afc.error.AFC_error(f"'{extruder_name}' is not a valid extruder", pause=False)
+            return
+
+        start = bool(gcmd.get_int("START", 0, minval=0, maxval=1))
+        move = gcmd.get_float("MOVE", 0.0)
+        complete = bool(gcmd.get_int("COMPLETE", 0, minval=0, maxval=1))
+        cancel = bool(gcmd.get_int("CANCEL", 0, minval=0, maxval=1))
+        active = getattr(self, "stn_unload_calibration_active", False)
+
+        if not active:
+            if getattr(self, "cutter_calibration_active", False):
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Cutter retract calibration is already active.", pause=False)
+                return
+            if self.afc.current is None:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Load filament to the nozzle before calibrating tool_stn_unload.", pause=False)
+                return
+            current_lane = self.afc.lanes.get(self.afc.current)
+            if (
+                current_lane is None
+                or current_lane.extruder_obj is not self.afc.tools[extruder_name]):
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "The selected extruder does not own the currently loaded lane.", pause=False)
+                return
+            if not self.afc.tool_cut:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "tool_stn_unload calibration requires tool cutting, but the cutter is "
+                    "disabled.",
+                    pause=False)
+                return
+            if self.in_print():
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "tool_stn_unload calibration cannot run during a print.", pause=False)
+                return
+            if not start:
+                start_command = (
+                    f"AFC_TOOL_STN_UNLOAD_CALIBRATION EXTRUDER={extruder_name} START=1")
+                begin = [("Cut & Begin", start_command, "primary")]
+                text = (
+                    "Heat and load filament to the nozzle. Beginning will execute the configured "
+                    "cut command. You will then retract slowly until the toolhead sensor clears, "
+                    "or until filament leaves the extruder gears when ramming."
+                )
+                prompt.create_custom_p("tool_stn_unload Calibration", text, begin, True, None, None)
+                return
+            cutter_command = getattr(self.afc, "tool_cut_cmd", None) or "AFC_CUT"
+            self.afc.gcode.run_script_from_command(
+                f"{cutter_command} EXTRUDER={extruder_name}")
+            self.afc.toolhead.wait_moves()
+            self.stn_unload_calibration_active = True
+            self.stn_unload_calibration_distance = 0.0
+            self.stn_unload_calibration_extruder = extruder_name
+        elif self.stn_unload_calibration_extruder != extruder_name:
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "Finish or cancel the active tool_stn_unload calibration first.", pause=False)
+            return
+
+        extruder = self.afc.tools[extruder_name]
+        tool_start_triggered = (
+            extruder.tool_start is not None
+            and extruder.tool_start != "buffer"
+            and extruder.tool_start_state
+        )
+        tool_end_triggered = (
+            extruder.tool_end is not None
+            and extruder.tool_end_state
+        )
+        if complete and (tool_start_triggered or tool_end_triggered):
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "Cannot save tool_stn_unload while a toolhead sensor is still triggered.",
+                pause=False)
+            return
+        if cancel or complete:
+            measured = self.stn_unload_calibration_distance
+            if measured:
+                self.afc.move_e_pos(
+                    measured, 1.0, "tool_stn_unload calibration restore", wait_tool=True)
+            self.stn_unload_calibration_active = False
+            self.stn_unload_calibration_distance = 0.0
+            self.stn_unload_calibration_extruder = None
+            if cancel:
+                prompt.p_end()
+                self.logger.info(
+                    "tool_stn_unload calibration cancelled; measured movement was restored.")
+                return
+            extruder._update_tool_stn_unload(measured)
+            self.ConfigRewrite(extruder.fullname, 'tool_stn_unload', measured, '')
+            text = (
+                f"Saved tool_stn_unload {measured:.3f}mm for {extruder_name} and restored "
+                "the measured movement. Run a normal unload to verify the cut and unload path."
+            )
+            prompt.create_custom_p(
+                "tool_stn_unload Calibration Complete", text, None, True, None, None)
+            return
+
+        if move:
+            if abs(move) > 25.0:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Calibration MOVE must be between -25mm and 25mm.", pause=False)
+                return
+            if move > 0:
+                move = min(move, self.stn_unload_calibration_distance)
+            elif self.stn_unload_calibration_distance - move > 200.0:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Calibration is limited to 200mm of retraction.", pause=False)
+                return
+            if move:
+                self.afc.move_e_pos(move, 1.0, "tool_stn_unload calibration", wait_tool=True)
+                self.stn_unload_calibration_distance = round(
+                    self.stn_unload_calibration_distance - move, 3)
+
+        sensor_text = "unavailable; judge when filament clears the extruder gears"
+        if extruder.tool_start is not None and extruder.tool_start != "buffer":
+            sensor_text = "triggered" if extruder.tool_start_state else "clear"
+        command = f"AFC_TOOL_STN_UNLOAD_CALIBRATION EXTRUDER={extruder_name}"
+        groups = [
+            [("Retract 1mm", command + " MOVE=-1", "primary"),
+             ("Retract 5mm", command + " MOVE=-5", "secondary")],
+            [("Undo 1mm", command + " MOVE=1", "info"),
+             ("Undo 5mm", command + " MOVE=5", "info")]
+        ]
+        footer = [("Cancel & Restore", command + " CANCEL=1", "warning"),
+                  ("Clear & Save", command + " COMPLETE=1", "primary")]
+        text = (
+            f"Retracted after cut: {self.stn_unload_calibration_distance:.3f}mm. "
+            f"Tool-start sensor: {sensor_text}. Continue until the sensor is clear or filament "
+            "is outside the extruder gears."
+        )
+        prompt.create_custom_p("tool_stn_unload Calibration", text, None, False, groups, footer)
+
+    cmd_AFC_CUTTER_CALIBRATION_help = 'Interactively calibrate the toolhead cutter retract length'
+    cmd_AFC_CUTTER_CALIBRATION_options = {
+        "EXTRUDER": {"default": "", "type": "string"},
+        "MOVE": {"default": 0, "type": "float"},
+        "MARGIN": {"default": 10, "type": "float"},
+        "COMPLETE": {"default": 0, "type": "int"},
+        "CANCEL": {"default": 0, "type": "int"}
+    }
+    def cmd_AFC_CUTTER_CALIBRATION(self, gcmd: GCodeCommand) -> None:
+        """
+        Interactively find the cutter retract length.
+
+        With filament loaded to the nozzle, this command retracts filament in small
+        increments while the user applies light pressure to the cutter. Completing
+        calibration restores the filament, subtracts a safety margin, and saves the result.
+
+        Usage
+        -------
+        `AFC_CUTTER_CALIBRATION EXTRUDER=<extruder> MARGIN=<safety_margin>`
+
+        Example
+        -------
+        ```
+        AFC_CUTTER_CALIBRATION EXTRUDER=extruder MARGIN=10
+        ```
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        extruder_name = gcmd.get("EXTRUDER", None)
+        move = gcmd.get_float("MOVE", 0.0)
+        complete = bool(gcmd.get_int("COMPLETE", 0, minval=0, maxval=1))
+        cancel = bool(gcmd.get_int("CANCEL", 0, minval=0, maxval=1))
+
+        if self.afc.current is None:
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "Load filament to the nozzle before calibrating cutter retract length.",
+                pause=False)
+            return
+
+        current_lane = self.afc.lanes.get(self.afc.current)
+        if current_lane is None:
+            prompt.p_end()
+            self.afc.error.AFC_error("Cannot find the currently loaded lane.", pause=False)
+            return
+        if not extruder_name:
+            extruder_name = current_lane.extruder_obj.name
+        if (
+            extruder_name not in self.afc.tools
+            or current_lane.extruder_obj is not self.afc.tools[extruder_name]):
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "The selected extruder does not own the currently loaded lane.", pause=False)
+            return
+
+        if self.in_print():
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "Cutter retract calibration cannot run during a print.", pause=False)
+            return
+
+        if not getattr(self, "cutter_calibration_active", False):
+            if getattr(self, "stn_unload_calibration_active", False):
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "tool_stn_unload calibration is already active.", pause=False)
+                return
+            if move or complete or cancel:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Start AFC_CUTTER_CALIBRATION before using its prompt actions.", pause=False)
+                return
+            self.cutter_calibration_active = True
+            self.cutter_calibration_distance = 0.0
+            self.cutter_calibration_margin = gcmd.get_float("MARGIN", 10.0, minval=0.0)
+            self.cutter_calibration_extruder = extruder_name
+        elif self.cutter_calibration_extruder != extruder_name:
+            prompt.p_end()
+            self.afc.error.AFC_error(
+                "Finish or cancel the active cutter calibration first.", pause=False)
+            return
+
+        if cancel:
+            if self.cutter_calibration_distance:
+                self.afc.move_e_pos(self.cutter_calibration_distance, 1.0,
+                                    "Cutter calibration restore", wait_tool=True)
+            self.cutter_calibration_active = False
+            self.cutter_calibration_distance = 0.0
+            self.cutter_calibration_extruder = None
+            prompt.p_end()
+            self.logger.info(
+                "Cutter retract calibration cancelled; filament restored to its starting position.")
+            return
+
+        if complete:
+            retract_length = round(max(
+                self.cutter_calibration_distance - self.cutter_calibration_margin, 0.0), 3)
+            if self.cutter_calibration_distance:
+                self.afc.move_e_pos(self.cutter_calibration_distance, 1.0,
+                                    "Cutter calibration restore", wait_tool=True)
+
+            macro_name = "_AFC_CUT_TIP_VARS"
+            per_tool_macro = f"{macro_name}_{extruder_name}"
+            per_tool_object = self.printer.lookup_object(
+                f"gcode_macro {per_tool_macro}", None)
+            if per_tool_object is not None:
+                macro_name = per_tool_macro
+            self.afc.gcode.run_script_from_command(
+                f"SET_GCODE_VARIABLE MACRO={macro_name} "
+                f"VARIABLE=retract_length VALUE={retract_length}")
+            section_name = f"gcode_macro {macro_name}"
+            self.ConfigRewrite(
+                section_name, 'variable_retract_length', retract_length, '')
+
+            measured_distance = self.cutter_calibration_distance
+            self.cutter_calibration_active = False
+            self.cutter_calibration_distance = 0.0
+            self.cutter_calibration_extruder = None
+            text = (
+                f"Measured {measured_distance:.3f}mm. Saved retract_length "
+                f"{retract_length:.3f}mm after subtracting the "
+                f"{self.cutter_calibration_margin:.3f}mm safety margin. Filament was restored "
+                "to its starting position. Run a normal unload to verify the cut, then repeat "
+                "with a smaller margin if more retraction is needed."
+            )
+            prompt.create_custom_p(
+                "Cutter Retract Calibration Complete", text, None, True, None, None)
+            return
+
+        if move:
+            if abs(move) > 25.0:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Cutter calibration MOVE must be between -25mm and 25mm.", pause=False)
+                return
+
+            # Positive movement is only permitted to undo retraction performed by this calibration.
+            if move > 0:
+                move = min(move, self.cutter_calibration_distance)
+            elif self.cutter_calibration_distance - move > 200.0:
+                prompt.p_end()
+                self.afc.error.AFC_error(
+                    "Cutter calibration is limited to 200mm of total retraction.", pause=False)
+                return
+
+            if move:
+                self.afc.move_e_pos(move, 1.0, "Cutter retract calibration", wait_tool=True)
+                self.cutter_calibration_distance = round(self.cutter_calibration_distance - move, 3)
+
+        text = (
+            "Keep light pressure on the cutter and retract until it can move fully inward. "
+            f"Retracted: {self.cutter_calibration_distance:.3f}mm. Safety margin: "
+            f"{self.cutter_calibration_margin:.3f}mm. The nozzle must remain hot enough to "
+            "move filament."
+        )
+        command = f"AFC_CUTTER_CALIBRATION EXTRUDER={extruder_name}"
+        groups = [
+            [("Retract 1mm", command + " MOVE=-1", "primary"),
+             ("Retract 5mm", command + " MOVE=-5", "secondary")],
+            [("Undo 1mm", command + " MOVE=1", "info"),
+             ("Undo 5mm", command + " MOVE=5", "info")]
+        ]
+        footer = [
+            ("Cancel & Restore", command + " CANCEL=1", "warning"),
+            ("Cutter Moves Fully", command + " COMPLETE=1", "primary")
+        ]
+        prompt.create_custom_p("Cutter Retract Calibration", text, None, False, groups, footer)
 
     cmd_ALL_CALIBRATION_help = 'open prompt to begin calibration to confirm calibrating all lanes'
     def cmd_ALL_CALIBRATION(self, gcmd):
