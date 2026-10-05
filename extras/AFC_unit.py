@@ -77,7 +77,7 @@ class afcUnit:
         self.extruder                    = config.get("extruder", None)                                      # Extruder name(AFC_extruder) that belongs to this unit, can be overridden in AFC_stepper section
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
 
-        self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
+        self.remember_spool              = config.getboolean('remember_spool', False)                        # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
         # LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
@@ -787,8 +787,9 @@ class afcUnit:
         self.afc.logger.error("{} function not defined for {}".format(name, self.name))
 
     # Function that other units can create so that they are specific to the unit
-    def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
-        self._print_function_not_defined(self.system_test.__name__)
+    def system_Test(self, cur_lane, delay, assignTcmd, enable_movement) -> bool:
+        self._print_function_not_defined(self.system_Test.__name__)
+        return False
 
     def calibrate_bowden(self, cur_lane, dis, tol):
         self._print_function_not_defined(self.calibrate_bowden.__name__)

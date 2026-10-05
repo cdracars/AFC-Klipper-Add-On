@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-09-12]
+### Added
+- New `pin_tool_start: virtual` option for `[AFC_extruder]` sections: creates a virtual toolhead sensor for standalone toolchanger toolheads that have no physical sensor (closes #810).
+- Added `standalone_auto_load_unload` variable to AFC and AFC_extruder configs so users can bypass the automated load for standalone lanes for both toolheads that have a sensor and virtual sensors. When this is disabled user will have to still manually load filament into the toolheads gears/hotend.
+
+## [09-10-2026]
+### Fixed
+- Disabled ooze prevention by default, this was originally meant for toolchangers. But with a recent klipperscreen update, klipperscreen now sends tool number(T) when setting temperature for single toolhead printers and AFC does not set temp because this was defaulted as enabled.
+
+## [09-04-2026]
+### Fixed
+- Fixed an issue where the `AFC_TEST_LANES` macro would potentially call the wrong PARK macro if a custom macro was
+  defined by the user.
+
+## [09-03-2026]
+### Fixed
+- Setting `remember_spool` to `False` will now actually set it to `False`.
+
+## [08-31-2026]
+### Fixed
+- `install-afc.sh` / `update-afc.sh` now resolve the add-on directory from the script's own
+  location (`SCRIPT_DIR`) instead of assuming `~/AFC-Klipper-Add-On`. 
+- The Moonraker `[update_manager afc-software]` block is now written with the actual add-on path
+  rather than a hardcoded `~/AFC-Klipper-Add-On`.
+- `install-afc.sh` no longer ignores the `-m` (Moonraker config path) flag.
+
 ## [2026-08-24]
 ### Added
 - Guided toolhead calibration macros for `tool_stn`, `tool_stn_unload`, and cutter retract length,
@@ -13,11 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2026-08-23]
 ### Added:
-- Added thread for writing vars to file so that slow disks don't have a chance to block on writes
-  which could cause timer-too-close errors.
-- Added thread for communicating with moonraker, converted most of the calls to moonraker to be
-  asynchronous so that AFC does not block Klipper's main reactor thread. Left some calls during
-  startup synchronous and the calls for TD-1 when calibrating.
+- Added thread for writing vars to file so that slow disks don't have a chance to block on writes which could cause timer too close errors.
+- Added thread for communicating with moonraker, converted most of the call to moonraker to be asynchronous so that AFC does not block klippers main reactor thread. Left some calls during start up sychronous and the calls for TD-1 when calibrating.
 
 ### Fixed
 - AFC no longer crashes with `AttributeError: 'GCodeMove' object has no attribute 'absolute_extrude'` during tool changes on current Klipper master builds. Klipper renamed the `absolute_extrude` attribute to `allow_absolute_extrude` (v0.13.0-741 and newer); AFC now reads and restores whichever attribute name the host provides, so it keeps working on older and newer Klipper alike.
